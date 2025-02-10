@@ -22,6 +22,7 @@
      
      <ItemGroup Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net7.0'))">
          <TrimmerRootAssembly Include="System.Runtime" />
+         <TrimmerRootAssembly Include="System.Private.CoreLib" />
      </ItemGroup>
 
     <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' ">
