@@ -21,6 +21,7 @@ public class MachOFile : Il2CppBinary
 
     public MachOFile(MemoryStream input) : base(input)
     {
+        LibLogger.VerboseNewline("Reading Mach-O file...");
         _raw = input.GetBuffer();
 
         LibLogger.Verbose("\tReading Mach-O header...");
@@ -76,17 +77,7 @@ public class MachOFile : Il2CppBinary
 
         var dyldData = _loadCommands.FirstOrDefault(c => c.Command is LoadCommandId.LC_DYLD_INFO or LoadCommandId.LC_DYLD_INFO_ONLY)?.CommandData as MachODynamicLinkerCommand;
         var exports = dyldData?.Exports ?? [];
-        // DEBUG
-        // var debugDict = new Dictionary<long, string>();
-        // for (int index = 0; index < exports.Length; ++index) {
-        //     var export = exports[index];
-        //     Console.WriteLine($"Export: {export.Name[1..]} -> 0x{export.Address:X}");
-        //     // detect duplicate
-        //     if (debugDict.ContainsKey(export.Address) && debugDict[export.Address] != export.Name[1..]) {
-        //         Console.WriteLine($"Duplicate: {export.Name[1..]} -> 0x{export.Address:X}");
-        //     }
-        //     debugDict[export.Address] = export.Name[1..];
-        // }
+        
         _exportAddressesDict = exports.ToDictionary(e => e.Name[1..], e => e.Address); //Skip the first character, which is a leading underscore inserted by the compiler
         _exportNamesDict = new Dictionary<long, string>();
         foreach (var export in exports) // there may be duplicate names
@@ -94,9 +85,15 @@ public class MachOFile : Il2CppBinary
             _exportNamesDict[export.Address] = export.Name[1..];
         }
 
-        LibLogger.VerboseNewline($"Found {_exportAddressesDict.Count} exports in the DYLD info load command.");
+        LibLogger.VerboseNewline($"\tFound {_exportAddressesDict.Count} exports in the DYLD info load command.");
+        
+        var chainedFixups = _loadCommands.FirstOrDefault(c => c.Command == LoadCommandId.LC_DYLD_CHAINED_FIXUPS)?.CommandData as MachOLinkEditDataCommand;
+        if (chainedFixups != null) 
+            ApplyChainedFixups(chainedFixups);
 
         LibLogger.VerboseNewline($"\tMach-O contains {Segments64.Length} segments, split into {Sections64.Length} sections.");
+        
+        LibLogger.VerboseNewline("Mach-O file read successfully.");
     }
 
     public override long RawLength => _raw.Length;
@@ -170,4 +167,78 @@ public class MachOFile : Il2CppBinary
     }
 
     public override ulong GetVirtualAddressOfPrimaryExecutableSection() => GetTextSection64().Address;
+    
+    //Thanks to LukeFZ for this
+    private void ApplyChainedFixups(MachOLinkEditDataCommand cmd)
+    {
+        LibLogger.Verbose("\tApplying chained fixups...");
+        var chainedFixupsHeader = ReadReadable<MachODyldChainedFixupsHeader>(cmd.Offset);
+        if (chainedFixupsHeader.FixupsVersion != MachODyldChainedFixupsHeader.SupportedFixupsVersion)
+        {
+            LibLogger.ErrorNewline($"Mach-O: Unsupported fixups version {chainedFixupsHeader.FixupsVersion}, expecting {MachODyldChainedFixupsHeader.SupportedFixupsVersion}");
+            return;
+        }
+
+        if (chainedFixupsHeader.ImportsFormat != MachODyldChainedFixupsHeader.SupportedImportsFormat)
+        {
+            LibLogger.ErrorNewline($"Mach-O: Unsupported imports format {chainedFixupsHeader.ImportsFormat}, expecting {MachODyldChainedFixupsHeader.SupportedImportsFormat}");
+            return;
+        }
+
+        var posBack = Position;
+        
+        var startsBase = cmd.Offset + chainedFixupsHeader.StartsOffset;
+        
+        Position = startsBase;
+        var segmentCount = ReadUInt32();
+        var segmentStartOffsets = ReadClassArrayAtRawAddr<uint>(startsBase + 4, segmentCount);
+
+        Position = posBack;
+
+        var count = 0;
+        foreach (var startOffset in segmentStartOffsets)
+        {
+            if (startOffset == 0)
+                continue;
+            
+            var startsInfo = ReadReadable<MachODyldChainedStartsInSegment>(startsBase + startOffset);
+            if (startsInfo.SegmentOffset == 0)
+                continue;
+            
+            var pointerFormat = (MachODyldChainedPtr)startsInfo.PointerFormat;
+            var pages = ReadClassArrayAtRawAddr<ushort>(startsBase + startOffset + MachODyldChainedStartsInSegment.Size, startsInfo.PageCount);
+            for (var i = 0; i < pages.Length; i++)
+            {
+                var page = pages[i];
+                if (page == MachODyldChainedStartsInSegment.DYLD_CHAINED_PTR_START_NONE)
+                    continue;
+                var chainOffset = startsInfo.SegmentOffset + (ulong)(i * startsInfo.PageSize) + page;
+                while (true)
+                {
+                    var currentEntry = ReadReadable<MachODyldChainedPtr64Rebase>((long)chainOffset);
+                    var fixedValue = 0ul;
+                    if (currentEntry.Bind)
+                    {
+                        //TODO: Bind.
+                    }
+                    else
+                    {
+                        fixedValue = pointerFormat switch
+                        {
+                            MachODyldChainedPtr.DYLD_CHAINED_PTR_64 or MachODyldChainedPtr.DYLD_CHAINED_PTR_64_OFFSET => currentEntry.High8 << 56 | currentEntry.Target,
+                            _ => fixedValue
+                        };
+                        WriteWord((int)chainOffset, fixedValue);
+                        count++;
+                    }
+
+                    if (currentEntry.Next == 0)
+                        break;
+                    chainOffset += currentEntry.Next * 4;
+                }
+            }
+        }
+        
+        LibLogger.VerboseNewline($"Applied {count} chained fixups.");
+    }
 }

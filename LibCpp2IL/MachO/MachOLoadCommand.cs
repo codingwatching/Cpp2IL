@@ -38,6 +38,11 @@ public class MachOLoadCommand : ReadableClass
                 CommandData = reader.ReadReadableHereNoLock<MachODynamicLinkerCommand>();
                 break;
             }
+            case LoadCommandId.LC_DYLD_CHAINED_FIXUPS:
+            {
+                CommandData = reader.ReadReadableHereNoLock<MachOLinkEditDataCommand>();
+                break;
+            }
             default:
                 UnknownCommandData = reader.ReadByteArrayAtRawAddressNoLock(-1, (int)CommandSize - 8); // -8 because we've already read the 8 bytes of the header
                 break;
