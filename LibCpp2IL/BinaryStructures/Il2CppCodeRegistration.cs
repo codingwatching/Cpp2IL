@@ -34,7 +34,7 @@ public class Il2CppCodeRegistration : ReadableClass
         //unresolvedVirtualCallPointers
         size += 2 * ptrSize;
 
-        if (metadataVersion >= 29.1f)
+        if (metadataVersion is (> 29.1f and < 31f) or >= 31.1f)
             //unresolvedInstanceCallPointers and unresolvedStaticCallPointers
             size += 2 * ptrSize;
 
@@ -78,8 +78,8 @@ public class Il2CppCodeRegistration : ReadableClass
     public ulong unresolvedVirtualCallCount; //Renamed to unresolvedIndirectCallCount in v29.1
     public ulong unresolvedVirtualCallPointers;
 
-    [Version(Min = 29.1f)] public ulong unresolvedInstanceCallPointers;
-    [Version(Min = 29.1f)] public ulong unresolvedStaticCallPointers;
+    [Version(Min = 29.1f, Max=31f), Version(Min=31.1f)] public ulong unresolvedInstanceCallPointers;
+    [Version(Min = 29.1f, Max=31f), Version(Min=31.1f)] public ulong unresolvedStaticCallPointers;
 
     [Version(Min = 23)] public ulong interopDataCount;
     [Version(Min = 23)] public ulong interopData;
@@ -119,7 +119,7 @@ public class Il2CppCodeRegistration : ReadableClass
         unresolvedVirtualCallCount = reader.ReadNUint();
         unresolvedVirtualCallPointers = reader.ReadNUint();
 
-        if (IsAtLeast(29.1f))
+        if (IsAtLeast(29.1f) && IsNot(31f))
         {
             unresolvedInstanceCallPointers = reader.ReadNUint();
             unresolvedStaticCallPointers = reader.ReadNUint();
